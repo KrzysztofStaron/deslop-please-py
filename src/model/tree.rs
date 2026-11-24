@@ -3,6 +3,19 @@
 //! module. A directory that is not a package is not a level.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+static DOTTED: OnceLock<bool> = OnceLock::new();
+
+/// Names are written with dots, as Python writes them, not with `::`.
+pub fn use_dots() {
+    let _ = DOTTED.set(true);
+}
+
+/// What separates a module's name from its parent's, and an item's from its type's.
+pub fn separator() -> &'static str {
+    if DOTTED.get().copied().unwrap_or(false) { "." } else { "::" }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(u32);
@@ -132,7 +145,7 @@ impl Tree {
             NodeKind::Package => node.name.clone(),
             NodeKind::Module => {
                 let parent = self.parent(id).expect("a module has a parent");
-                format!("{}::{}", self.display(parent), node.name)
+                format!("{}{}{}", self.display(parent), separator(), node.name)
             }
             NodeKind::Workspace => ".".to_owned(),
         }

@@ -30,6 +30,21 @@ error[field-leak]: `RunQueue::items` is known outside `RunQueue`: 4 places in 2 
 deslop-please: 65535 errors, well done!
 ```
 
+### Python
+
+In a directory with no Cargo workspace that holds Python code (or anywhere, with `--python`), it
+lints Python. It needs only `python3`: the code is read with Python's `ast`, and names are
+resolved from imports, annotations, constructor calls and `self`. A name it cannot resolve to
+something the project defines is skipped, so annotating parameters and attributes finds more.
+Packages are the top-level directories (a `src/` without `__init__.py` is looked through),
+modules are files, and `tests/`, `test_*.py` and `conftest.py` are test code. Hidden
+directories, virtualenvs and files git ignores are skipped.
+
+```bash
+cargo install --path .
+cd my-python-project && deslop-please
+```
+
 ### It's not my fault 
 
 Sure, let's just mute them:

@@ -19,7 +19,7 @@ use super::{
     without_generics,
 };
 use crate::graph::{Graph, ThingId, Use};
-use crate::model::{ItemId, ItemKind, Model, NodeId};
+use crate::model::{ItemId, ItemKind, Model, NodeId, separator};
 
 pub fn check(model: &Model, graph: &Graph, scope: Option<NodeId>) -> Vec<Diagnostic> {
     let mut fields: BTreeMap<ThingId, Vec<ItemId>> = BTreeMap::new();
@@ -125,7 +125,7 @@ fn others(
 /// `items` for `RunQueue::items`.
 fn bare_name(model: &Model, field: ItemId) -> String {
     let name = &model.items[field.index()].name;
-    name.rsplit("::").next().unwrap_or(name).to_owned()
+    name.rsplit(separator()).next().unwrap_or(name).to_owned()
 }
 
 fn diagnostic(
@@ -145,8 +145,9 @@ fn diagnostic(
             Some(holder) => {
                 let holder = &model.items[holder.index()];
                 format!(
-                    "{}::{}",
+                    "{}{}{}",
                     tree.display(holder.owner),
+                    separator(),
                     without_generics(&holder.name)
                 )
             }
@@ -190,7 +191,7 @@ fn diagnostic(
     }
     Diagnostic {
         lint: Lint::FieldLeak,
-        key: format!("{}::{field_name}", tree.display(owner.home)),
+        key: format!("{}{}{field_name}", tree.display(owner.home), separator()),
         message: format!(
             "`{field_name}` is known outside `{type_name}`: {} in {}",
             counted(sites.len(), "place"),
@@ -199,7 +200,7 @@ fn diagnostic(
         location: sites.keys().next().cloned(),
         notes,
         picture: Picture::Spread {
-            owner: format!("{}::{type_name}", tree.display(owner.home)),
+            owner: format!("{}{}{type_name}", tree.display(owner.home), separator()),
             field: bare_name(model, field),
             modules,
             others,

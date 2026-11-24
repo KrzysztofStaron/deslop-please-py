@@ -7,7 +7,7 @@ mod from_index;
 mod tree;
 
 pub use from_index::build;
-pub use tree::{NodeId, NodeKind, Tree};
+pub use tree::{NodeId, NodeKind, Tree, separator, use_dots};
 
 use std::collections::HashMap;
 

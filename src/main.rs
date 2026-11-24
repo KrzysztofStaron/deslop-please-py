@@ -8,6 +8,7 @@ mod graph;
 mod indexing;
 mod lint;
 mod model;
+mod python;
 mod scip;
 mod workspace;
 
@@ -42,20 +43,25 @@ struct Options {
     allow: Option<PathBuf>,
     update_allow: Option<PathBuf>,
     configuration: Configuration,
+    python: bool,
 }
 
 fn usage() -> String {
     format!(
         "\
-usage: {TOOL} [crate_or_mod] [--allow <path>] [--update-allow <path>]
+usage: {TOOL} [crate_or_mod] [--python] [--allow <path>] [--update-allow <path>]
        [--target <triple>] [-F, --features <features>] [--all-features]
        [--no-default-features]
 
 Runs architectural lints (module-cycle, tangle, field-leak, shallow-module,
-wide-directory, long-file) on the Cargo workspace.
+wide-directory, long-file) on the Cargo workspace, or on a Python project: a
+directory without a Cargo workspace that holds Python code, or any directory
+with --python. Python needs only python3; names are resolved from the code's
+imports, annotations, constructor calls and `self`.
 
 options:
   <crate_or_mod>               check only one crate or module (e.g. my-crate)
+  --python                     check Python code, not a Cargo workspace
   --allow <path>               suppress listed existing debt; new errors still fail
   --update-allow <path>        write current diagnostics to <path>
 
@@ -78,7 +84,8 @@ A flag's value is the next word, or follows `=`: `--target=<triple>`.
 }
 
 /// The flags, and whether each takes a value. `-F` is `--features`.
-const FLAGS: [(&str, bool); 6] = [
+const FLAGS: [(&str, bool); 7] = [
+    ("--python", false),
     ("--allow", true),
     ("--update-allow", true),
     ("--target", true),
@@ -97,6 +104,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
         allow: None,
         update_allow: None,
         configuration: Configuration::default(),
+        python: false,
     };
     let mut given = Vec::new();
     let mut words = arguments.iter().map(String::as_str).peekable();
@@ -125,6 +133,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Options, String> {
         };
         let configuration = &mut options.configuration;
         match flag {
+            "--python" => options.python = true,
             "--allow" => options.allow = Some(PathBuf::from(value)),
             "--update-allow" => options.update_allow = Some(PathBuf::from(value)),
             "--target" => configuration.target(value)?,
@@ -181,8 +190,15 @@ fn main() -> ExitCode {
 }
 
 fn run(options: Options) -> Result<bool, Error> {
-    let workspace = Workspace::discover()?;
-    let model = load_model(&workspace, &options.configuration)?;
+    let cwd = std::env::current_dir()
+        .map_err(|e| Error::new(format!("cannot read current directory: {e}")))?;
+    let in_cargo = cwd.ancestors().any(|dir| dir.join("Cargo.toml").exists());
+    let model = if options.python || (!in_cargo && python::is_python_project(&cwd)) {
+        python::build(&cwd)?
+    } else {
+        let workspace = Workspace::discover()?;
+        load_model(&workspace, &options.configuration)?
+    };
     let scope = match &options.scope {
         Some(query) => Some(
             lint::resolve_node(&model, query)
