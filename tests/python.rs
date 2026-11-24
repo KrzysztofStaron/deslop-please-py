@@ -69,3 +69,14 @@ fn a_module_that_shows_most_of_its_functions_is_shallow() {
         &["error[shallow-module]: `pkg.store` is shallow: it shows 10 of its 11 functions"],
     );
 }
+
+#[test]
+fn types_follow_loops_mappings_isinstance_and_comprehensions() {
+    flags(
+        "inferred",
+        &[
+            "error[field-leak]: `Ring.items` is known outside `Ring`: 2 places in 1 module",
+            "error[field-leak]: `Ring.head` is known outside `Ring`: 1 place in 1 module",
+        ],
+    );
+}

@@ -30,6 +30,15 @@ MUTABLE_TYPES = {
     "MutableMapping", "MutableSequence", "MutableSet", "Queue",
 }
 UNKNOWN = "unknown"
+SEQUENCES = {
+    "list", "List", "Sequence", "Iterable", "Iterator", "set", "Set", "frozenset",
+    "FrozenSet", "tuple", "Tuple", "deque", "Deque", "Collection", "MutableSequence",
+    "AbstractSet", "MutableSet",
+}
+MAPPINGS = {"dict", "Dict", "Mapping", "MutableMapping", "defaultdict", "DefaultDict", "OrderedDict"}
+WRAPPERS = ("Optional", "Annotated", "Final", "ClassVar")
+SAME_ELEMENTS = {"list", "sorted", "reversed", "tuple", "set", "frozenset", "iter", "deepcopy", "copy"}
+ONE_ELEMENT = {"next", "max", "min"}
 
 
 def is_test_name(name):
@@ -377,6 +386,40 @@ class Extractor:
                         return found
         return None
 
+    def ann_ent(self, mod, expr):
+        """What an annotation says a value is: an instance of a project class,
+        or a collection (`seq` or `map`) of them."""
+        if expr is None:
+            return None
+        if isinstance(expr, ast.Constant):
+            if isinstance(expr.value, str):
+                try:
+                    return self.ann_ent(mod, ast.parse(expr.value, mode="eval").body)
+                except SyntaxError:
+                    return None
+            return None
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.BitOr):
+            return self.ann_ent(mod, expr.left) or self.ann_ent(mod, expr.right)
+        if isinstance(expr, ast.Subscript):
+            head = expr_name(expr.value)
+            inner = expr.slice
+            parts = inner.elts if isinstance(inner, ast.Tuple) else [inner]
+            if head in WRAPPERS:
+                return self.ann_ent(mod, parts[0])
+            if head == "Union":
+                for part in parts:
+                    found = self.ann_ent(mod, part)
+                    if found is not None:
+                        return found
+                return None
+            if head in SEQUENCES or head in MAPPINGS:
+                found = self.ann_ent(mod, parts[-1] if head in MAPPINGS else parts[0])
+                if found is not None and found[0] == "instance":
+                    return ("coll", found[1], "map" if head in MAPPINGS else "seq")
+                return None
+        cls = self.ann_class(mod, expr)
+        return ("instance", cls) if cls is not None else None
+
     def kind_of_annotation(self, mod, expr):
         """`plain`, `mutable`, or `unknown`, by what an annotation names."""
         if expr is None:
@@ -438,19 +481,23 @@ class Extractor:
             self.field_kind[idx] = kind
         return kind == "mutable"
 
-    def field_class(self, idx):
+    def field_ent(self, idx):
         if idx in self.field_type:
             return self.field_type[idx]
         item = self.items[idx]
-        found = self.ann_class(item.mod, item.annotation)
+        found = self.ann_ent(item.mod, item.annotation)
         if found is not None:
             self.field_type[idx] = found
         return found
 
-    def return_class(self, idx):
+    def field_class(self, idx):
+        found = self.field_ent(idx)
+        return found[1] if found and found[0] == "instance" else None
+
+    def return_ent(self, idx):
         item = self.items[idx]
         if idx not in self.ret_cache:
-            self.ret_cache[idx] = self.ann_class(item.mod, item.ast.returns)
+            self.ret_cache[idx] = self.ann_ent(item.mod, item.ast.returns)
         return self.ret_cache[idx]
 
     # ---- references ------------------------------------------------------
@@ -609,6 +656,7 @@ class Walker:
         self.cls = None
         self.me = None
         self.memo = {}
+        self.in_function = False
 
     # -- entities: ("item", idx) | ("module", name) | ("instance", cls) | None
 
@@ -623,18 +671,22 @@ class Walker:
     def of_item(self, idx):
         item = self.ex.items[idx]
         if item.kind == "field":
-            cls = self.ex.field_class(idx)
-            return ("instance", cls) if cls is not None else ("item", idx)
+            found = self.ex.field_ent(idx)
+            return found if found is not None else ("item", idx)
         if item.kind == "constant":
-            cls = self.ex.field_type.get(idx)
-            if cls is None:
-                cls = self.ex.ann_class(item.mod, item.annotation)
-            if cls is None and isinstance(item.value, ast.Call):
+            found = self.ex.field_ent(idx)
+            if found is None and isinstance(item.value, ast.Call):
                 called = self.ex.entity_static(item.mod, item.value.func)
                 if called and called[0] == "item" and self.ex.items[called[1]].kind == "type":
-                    cls = called[1]
-            return ("instance", cls) if cls is not None else ("item", idx)
+                    found = ("instance", called[1])
+            return found if found is not None else ("item", idx)
         return ("item", idx)
+
+    def element(self, ent):
+        """What iterating over `ent` yields, if it is known."""
+        if ent and ent[0] == "coll" and ent[2] == "seq":
+            return ("instance", ent[1])
+        return None
 
     def compute(self, expr):
         ex = self.ex
@@ -663,20 +715,73 @@ class Walker:
                 if member is not None:
                     return self.of_item(member)
             return None
-        if isinstance(expr, ast.Call):
-            func = self.entity(expr.func)
-            if func is None:
-                return None
-            if func[0] == "item":
-                item = ex.items[func[1]]
-                if item.kind == "type":
-                    return ("instance", func[1])
-                if item.kind == "function":
-                    cls = ex.return_class(func[1])
-                    return ("instance", cls) if cls is not None else None
+        if isinstance(expr, ast.Subscript):
+            base = self.entity(expr.value)
+            if base and base[0] == "coll":
+                if isinstance(expr.slice, ast.Slice):
+                    return base
+                return ("instance", base[1])
             return None
+        if isinstance(expr, ast.Call):
+            return self.call_entity(expr)
         if isinstance(expr, ast.Await):
             return self.entity(expr.value)
+        if isinstance(expr, ast.NamedExpr):
+            return self.entity(expr.value)
+        if isinstance(expr, ast.IfExp):
+            return self.entity(expr.body) or self.entity(expr.orelse)
+        if isinstance(expr, ast.BoolOp):
+            for value in expr.values:
+                found = self.entity(value)
+                if found is not None:
+                    return found
+            return None
+        if isinstance(expr, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            return getattr(expr, "_ent", None)
+        if isinstance(expr, (ast.List, ast.Set, ast.Tuple)) and expr.elts:
+            first = self.entity(expr.elts[0])
+            if first and first[0] == "instance":
+                return ("coll", first[1], "seq")
+            return None
+        if isinstance(expr, ast.Dict) and expr.values and expr.values[0] is not None:
+            first = self.entity(expr.values[0])
+            if first and first[0] == "instance":
+                return ("coll", first[1], "map")
+        return None
+
+    def call_entity(self, expr):
+        ex = self.ex
+        func = expr.func
+        if isinstance(func, ast.Attribute):
+            base = self.entity(func.value)
+            if base and base[0] == "coll":
+                if func.attr == "values":
+                    return ("coll", base[1], "seq")
+                if func.attr == "items":
+                    return ("pairs", base[1])
+                if func.attr in ("get", "pop", "setdefault"):
+                    return ("instance", base[1])
+                if func.attr == "copy":
+                    return base
+                return None
+        if isinstance(func, ast.Name) and func.id not in self.env and expr.args:
+            if func.id in SAME_ELEMENTS | ONE_ELEMENT | {"enumerate"}:
+                if ex.lookup(self.mod, func.id) is None:
+                    arg = self.entity(expr.args[0])
+                    if func.id == "enumerate":
+                        element = self.element(arg)
+                        return ("pairs", element[1]) if element else None
+                    if arg and arg[0] == "coll":
+                        return ("instance", arg[1]) if func.id in ONE_ELEMENT else ("coll", arg[1], arg[2])
+                    return None
+        target = self.entity(func)
+        if target is None or target[0] != "item":
+            return None
+        item = ex.items[target[1]]
+        if item.kind == "type":
+            return ("instance", target[1])
+        if item.kind == "function":
+            return ex.return_ent(target[1])
         return None
 
     def item_of(self, expr):
@@ -740,6 +845,10 @@ class Walker:
                 self.generic(child)
 
     def bind(self, target, value):
+        if not self.in_function:
+            if not isinstance(target, ast.Name):
+                self.expr(target)
+            return
         if isinstance(target, ast.Name):
             self.env[target.id] = value if value else UNKNOWN
         elif isinstance(target, (ast.Tuple, ast.List)):
@@ -762,9 +871,7 @@ class Walker:
 
     def stmt_Assign(self, node):
         self.expr(node.value)
-        value = self.entity(node.value)
-        if value is not None and value[0] not in ("instance",) and not (value[0] == "item" and self.ex.items[value[1]].kind == "type"):
-            value = None
+        value = self.kept(self.entity(node.value))
         for target in node.targets:
             self.assign_target(target, value)
 
@@ -772,19 +879,28 @@ class Walker:
         self.annotation(node.annotation)
         if node.value is not None:
             self.expr(node.value)
-        cls = self.ex.ann_class(self.mod, node.annotation)
-        value = ("instance", cls) if cls is not None else (self.entity(node.value) if node.value is not None else None)
-        if value is not None and value[0] not in ("instance",):
-            value = None
+        value = self.ex.ann_ent(self.mod, node.annotation)
+        if value is None and node.value is not None:
+            value = self.kept(self.entity(node.value))
         self.assign_target(node.target, value)
 
+    def kept(self, value):
+        """The part of what an expression is that a variable remembers."""
+        if value is None:
+            return None
+        if value[0] in ("instance", "coll", "pairs"):
+            return value
+        if value[0] == "item" and self.ex.items[value[1]].kind == "type":
+            return value
+        return None
+
     def assign_target(self, target, value):
-        if isinstance(target, ast.Attribute) and self.emit is False and value and value[0] == "instance":
+        if isinstance(target, ast.Attribute) and self.emit is False and value and value[0] in ("instance", "coll"):
             base = self.entity(target.value)
             if base and base[0] == "instance":
                 field = self.ex.member(base[1], target.attr)
                 if field is not None and self.ex.items[field].kind == "field":
-                    self.ex.field_type.setdefault(field, value[1])
+                    self.ex.field_type.setdefault(field, value)
         self.bind(target, value)
 
     def stmt_AugAssign(self, node):
@@ -793,11 +909,62 @@ class Walker:
         if isinstance(node.target, ast.Name):
             self.env[node.target.id] = UNKNOWN
 
+    def bind_iter(self, target, ent):
+        if ent and ent[0] == "pairs" and isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == 2:
+            self.bind(target.elts[0], None)
+            self.bind(target.elts[1], ("instance", ent[1]))
+        else:
+            self.bind(target, self.element(ent))
+
     def stmt_For(self, node):
         self.expr(node.iter)
-        self.bind(node.target, None)
+        self.bind_iter(node.target, self.entity(node.iter))
         for stmt in node.body + node.orelse:
             self.stmt(stmt)
+
+    def narrowing(self, test):
+        """What `isinstance` tests in a condition say about names, when true."""
+        found = {}
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            for value in test.values:
+                found.update(self.narrowing(value))
+        elif (
+            isinstance(test, ast.Call) and isinstance(test.func, ast.Name) and test.func.id == "isinstance"
+            and len(test.args) == 2 and isinstance(test.args[0], ast.Name)
+        ):
+            kinds = test.args[1].elts if isinstance(test.args[1], ast.Tuple) else [test.args[1]]
+            classes = [self.ex.entity_static(self.mod, kind) for kind in kinds]
+            if len(classes) == 1 and classes[0] and classes[0][0] == "item" and self.ex.items[classes[0][1]].kind == "type":
+                found[test.args[0].id] = ("instance", classes[0][1])
+        return found
+
+    def stmt_If(self, node):
+        self.expr(node.test)
+        narrowed = self.narrowing(node.test) if self.in_function else {}
+        before = {name: self.env.get(name) for name in narrowed}
+        self.env.update(narrowed)
+        for stmt in node.body:
+            self.stmt(stmt)
+        for name, old in before.items():
+            if old is None:
+                self.env.pop(name, None)
+            else:
+                self.env[name] = old
+        for stmt in node.orelse:
+            self.stmt(stmt)
+        test = node.test
+        if (
+            self.in_function and isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)
+            and node.body and isinstance(node.body[-1], (ast.Raise, ast.Return, ast.Continue, ast.Break))
+        ):
+            self.env.update(self.narrowing(test.operand))
+
+    def stmt_Assert(self, node):
+        self.expr(node.test)
+        if node.msg is not None:
+            self.expr(node.msg)
+        if self.in_function:
+            self.env.update(self.narrowing(node.test))
 
     stmt_AsyncFor = stmt_For
 
@@ -918,6 +1085,7 @@ class Walker:
 
     def function(self, node, idx, cls):
         outer = (self.holder, self.env, self.me, self.cls)
+        was_in_function = self.in_function
         for decorator in node.decorator_list:
             self.expr(decorator)
         if idx is not None:
@@ -930,19 +1098,21 @@ class Walker:
         for position, arg in enumerate(everyone):
             self.annotation(arg.annotation)
             env[arg.arg] = UNKNOWN
-            found = self.ex.ann_class(self.mod, arg.annotation)
+            found = self.ex.ann_ent(self.mod, arg.annotation)
             if found is not None:
-                env[arg.arg] = ("instance", found)
+                env[arg.arg] = found
             if position == 0 and item is not None and item.parent is not None and not item.static:
                 env[arg.arg] = ("item", item.parent) if item.classmethod else ("instance", item.parent)
         for default in args.defaults + [d for d in args.kw_defaults if d is not None]:
             self.expr(default)
         self.annotation(node.returns)
         self.env = env
+        self.in_function = True
         self.memo_scope()
         for stmt in node.body:
             self.stmt(stmt)
         self.holder, self.env, self.me, self.cls = outer
+        self.in_function = was_in_function
         self.memo_scope()
 
     def memo_scope(self):
@@ -1017,14 +1187,20 @@ class Walker:
     def comprehension(self, node, elements):
         outer = self.env
         self.env = dict(outer)
+        was_in_function = self.in_function
+        self.in_function = True
         for generator in node.generators:
             self.expr(generator.iter)
-            self.bind(generator.target, None)
+            self.bind_iter(generator.target, self.entity(generator.iter))
             for condition in generator.ifs:
                 self.expr(condition)
         self.memo_scope()
         for element in elements:
             self.expr(element)
+        last = self.entity(elements[-1])
+        if last and last[0] == "instance":
+            node._ent = ("coll", last[1], "map" if isinstance(node, ast.DictComp) else "seq")
+        self.in_function = was_in_function
         self.env = outer
         self.memo_scope()
 
