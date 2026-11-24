@@ -12,7 +12,7 @@ mod tangles;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::graph::{Graph, ThingId};
-use crate::model::{ItemId, Model, NodeId, NodeKind, Reference, Tree};
+use crate::model::{ItemId, Model, NodeId, NodeKind, Reference, Tree, separator};
 
 /// What a reader can hold in mind at once: seven (Miller, "The Magical Number
 /// Seven, Plus or Minus Two", 1956). The members of a tangle cannot be learned
@@ -228,9 +228,12 @@ impl Tie {
 /// `Stream::{self, new}, LIMIT`: `names`, with those under one name written
 /// once, as a `use` declaration writes them.
 fn grouped(names: &[String]) -> String {
+    if separator() == "." {
+        return listed(names);
+    }
     let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
     for name in names {
-        let (head, tail) = name.split_once("::").unwrap_or((name, "self"));
+        let (head, tail) = name.split_once(separator()).unwrap_or((name, "self"));
         match groups.iter_mut().find(|(other, _)| *other == head) {
             Some((_, tails)) => tails.push(tail.to_owned()),
             None => groups.push((head, vec![tail.to_owned()])),
@@ -240,7 +243,8 @@ fn grouped(names: &[String]) -> String {
         .into_iter()
         .map(|(head, tails)| match &tails[..] {
             [tail] if tail == "self" => head.to_owned(),
-            [tail] => format!("{head}::{tail}"),
+            [tail] => format!("{head}{}{tail}", separator()),
+            _ if separator() == "." => format!("{head}.({})", listed(&tails)),
             _ => format!("{head}::{{{}}}", listed(&tails)),
         })
         .collect();
@@ -339,7 +343,7 @@ fn in_scope(tree: &Tree, scope: Option<NodeId>, node: NodeId) -> bool {
 fn full_name(model: &Model, graph: &Graph, thing: ThingId) -> String {
     let thing = &graph.things[thing.index()];
     let name = without_generics(&model.items[thing.item.index()].name);
-    format!("{}::{name}", model.tree.display(thing.home))
+    format!("{}{}{name}", model.tree.display(thing.home), separator())
 }
 
 /// `a, b, c, +2 more`: at most [`HELD_IN_MIND`] of `names`.
