@@ -4,12 +4,13 @@
 [![test](https://github.com/deterministic-machines/deslop-please/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/deterministic-machines/deslop-please/actions/workflows/ci.yml?query=branch%3Amain)
 [![crates.io](https://img.shields.io/crates/v/deslop-please.svg)](https://crates.io/crates/deslop-please)
 
-An opinionated linter to remove sloppy code. It follows [*A Philosophy of Software Design*](https://www.amazon.com/Philosophy-Software-Design-John-Ousterhout/dp/1732102201): 
+An opinionated linter to remove sloppy code, for Rust and Python. It follows [*A Philosophy of Software Design*](https://www.amazon.com/Philosophy-Software-Design-John-Ousterhout/dp/1732102201): 
 **deep** modules, **narrow** interfaces. 
 
 
 ```bash
-cargo install deslop-please
+cargo install deslop-please          # Rust crate
+cargo install --git https://github.com/KrzysztofStaron/deslop-please-py   # this fork, with Python
 ```
 
 ```bash
@@ -32,18 +33,21 @@ deslop-please: 65535 errors, well done!
 
 ### Python
 
-In a directory with no Cargo workspace that holds Python code (or anywhere, with `--python`), it
-lints Python. It needs only `python3`: the code is read with Python's `ast`, and names are
-resolved from imports, annotations, constructor calls and `self`. A name it cannot resolve to
-something the project defines is skipped, so annotating parameters and attributes finds more.
-Packages are the top-level directories (a `src/` without `__init__.py` is looked through),
-modules are files, and `tests/`, `test_*.py` and `conftest.py` are test code. Hidden
-directories, virtualenvs and files git ignores are skipped.
-
 ```bash
-cargo install --path .
-cd my-python-project && deslop-please
+cd my-python-project
+deslop-please            # picks Python when there is no Cargo workspace
+deslop-please --python   # forces it
 ```
+
+Needs only `python3`. The code is read with Python's `ast`; names are resolved from imports,
+annotations, constructor calls and `self`. A name that cannot be resolved to something the
+project defines is skipped, so annotating parameters and attributes finds more.
+
+- Packages are the top-level directories; a `src/` without `__init__.py` is looked through. Modules are files.
+- `tests/`, `test_*.py` and `conftest.py` are test code.
+- Hidden directories, virtualenvs and files git ignores are skipped.
+- Names print with dots: `app.queue.ring.RunQueue`.
+- `--allow` and `--update-allow` work the same.
 
 ### It's not my fault 
 
