@@ -1,4 +1,6 @@
 class Ring:
+    limit_default = 8
+
     def __init__(self, limit: int) -> None:
         self.items: list[int] = []
         self.head = 0

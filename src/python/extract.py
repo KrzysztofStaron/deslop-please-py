@@ -814,9 +814,22 @@ class Walker:
 
     # -- emitting
 
+    def inherits(self, cls, base, seen=None):
+        seen = seen or set()
+        if cls in seen:
+            return False
+        seen.add(cls)
+        return any(b == base or self.inherits(b, base, seen) for b in self.ex.items[cls].bases)
+
     def refer(self, node, idx, copies=False):
         if not self.emit:
             return
+        item = self.ex.items[idx]
+        if item.kind == "field" and self.holder is not None:
+            holder = self.ex.items[self.holder]
+            cls = self.holder if holder.kind == "type" else holder.parent
+            if cls is not None and self.inherits(cls, item.parent):
+                return
         self.ex.refs.append({
             "file": self.mod.file, "line": node.lineno, "from": self.mod.node,
             "holder": self.holder, "item": idx, "copies": copies,
@@ -1151,7 +1164,10 @@ class Walker:
         idx = self.item_named(node)
         if idx is not None:
             idx = getattr(node, "_instead", idx)
-            self.refer(node, idx, copies=self.copies(idx, node))
+            base = self.entity(node.value)
+            on_class = base is not None and base[0] == "item" and self.ex.items[base[1]].kind == "type"
+            if not (on_class and self.ex.items[idx].kind == "field"):
+                self.refer(node, idx, copies=self.copies(idx, node))
         node.value._reach = True
         self.expr(node.value)
 

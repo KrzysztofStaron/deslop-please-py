@@ -24,3 +24,7 @@ def by_narrowing(thing: Union[Ring, int]) -> None:
 
 def by_comprehension(rings: list[Ring]) -> list[int]:
     return [r.head for r in rings]
+
+
+def by_class(rings: list[Ring]) -> int:
+    return Ring.limit_default
