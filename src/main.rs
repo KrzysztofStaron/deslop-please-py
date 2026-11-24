@@ -196,8 +196,17 @@ fn run(options: Options) -> Result<bool, Error> {
     let model = if options.python || (!in_cargo && python::is_python_project(&cwd)) {
         python::build(&cwd)?
     } else {
-        let workspace = Workspace::discover()?;
-        load_model(&workspace, &options.configuration)?
+        let rust = Workspace::discover()
+            .and_then(|workspace| load_model(&workspace, &options.configuration));
+        match rust {
+            Ok(model) => model,
+            Err(error) if python::is_python_project(&cwd) => {
+                return Err(Error::new(format!(
+                    "{error}\nThis directory holds Python code too: run `{TOOL} --python` to check it."
+                )));
+            }
+            Err(error) => return Err(error),
+        }
     };
     let scope = match &options.scope {
         Some(query) => Some(

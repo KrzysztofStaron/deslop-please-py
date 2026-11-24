@@ -48,6 +48,8 @@ project defines is skipped, so annotating parameters and attributes finds more.
 - Hidden directories, virtualenvs and files git ignores are skipped.
 - Names print with dots: `app.queue.ring.RunQueue`.
 - `--allow` and `--update-allow` work the same.
+- A directory that holds only test files is never `wide-directory`: pytest finds tests by listing one.
+- With a `Cargo.toml` too, it checks Rust; pass `--python` for the Python side.
 
 ### It's not my fault 
 

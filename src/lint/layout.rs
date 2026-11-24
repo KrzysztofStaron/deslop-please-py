@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Diagnostic, Lint, Location, Picture, in_scope, listed};
-use crate::model::{File, Model, NodeId};
+use crate::model::{File, Model, NodeId, separator};
 
 /// The most files and directories one directory holds. Past fifteen names, a
 /// listing is searched rather than read, and its files want directories of
@@ -28,20 +28,27 @@ pub fn check(model: &Model, scope: Option<NodeId>) -> Vec<Diagnostic> {
         .filter(|file| file.lines > MOST_LINES && concerned(file))
         .map(long_file)
         .collect();
-    // By directory, its members, and whether a file below it is in scope.
-    let mut directories: BTreeMap<&str, (BTreeSet<&str>, bool)> = BTreeMap::new();
+    // By directory, its members, whether a file below it is in scope, and
+    // whether one below it is not test code.
+    let mut directories: BTreeMap<&str, (BTreeSet<&str>, bool, bool)> = BTreeMap::new();
     for file in &model.files {
         for (directory, member) in holders(&file.path) {
-            let (members, below) = directories.entry(directory).or_default();
+            let (members, below, code) = directories.entry(directory).or_default();
             members.insert(member);
             *below |= concerned(file);
+            *code |= !file.test;
         }
     }
+    // Python's test runners find tests by listing a directory, so a flat
+    // directory of test files is how they are laid out, not sprawl.
+    let python = separator() == ".";
     diagnostics.extend(
         directories
             .iter()
-            .filter(|(_, (members, below))| *below && members.len() > MOST_MEMBERS)
-            .map(|(directory, (members, _))| wide_directory(model, directory, members)),
+            .filter(|(_, (members, below, code))| {
+                *below && members.len() > MOST_MEMBERS && (*code || !python)
+            })
+            .map(|(directory, (members, ..))| wide_directory(model, directory, members)),
     );
     diagnostics
 }
